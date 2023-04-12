@@ -217,7 +217,7 @@ def get_weekly_report_pg(anchor_date,look_back_days,db_u,db_pw,target_badges,wee
 # 0. Make table names and var names lower case with _
 
 def csv_to_db_pg(tmp_csv_path, archive_csv_path,db_u, db_pw):
-    sites = ['bmc']#['jhh','bmc']
+    sites = ['jhh','bmc']
     for site in sites:
         # Creates connection to db and loads appropriate scripts
         df_string = 'postgresql://'+db_u+':'+db_pw+'@localhost:5433/rtls_'+site # Format for ps string: dialect+driver://username:password@host:port/database

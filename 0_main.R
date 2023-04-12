@@ -36,7 +36,7 @@ csv_to_db_pg(
 
 get_weekly_report_pg(
   anchor_date = lubridate::today(),
-  look_back_days = 8,
+  look_back_days = 9,
   db_u = config$db_u,
   db_pw = config$db_pw,
   target_badges = getActiveBadges(config$badge_file),
@@ -46,7 +46,7 @@ beepr::beep(sound = 1)
 ######### Pulling data for feedback reports and analysis
 #########
 
-site <- c('jhh','bmc') # 'jhh','bmc'
+site <- c('bmc') # 'jhh','bmc'
 strt <-  lubridate::ymd('2023-01-01')#config$FB_report_start,#lubridate::ymd('2022-02-27'), 
 stp <- lubridate::ymd('2023-04-01')#config$FB_report_stop,#lubridate::ymd('2022-03-01'), 
 data_for_fb_df  <- get_and_locCode_RTLS_data_pg(
