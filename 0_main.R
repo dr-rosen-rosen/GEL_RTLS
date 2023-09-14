@@ -33,10 +33,11 @@ csv_to_db_pg(
   archive_csv_path = config$archive_csv_path,
   db_u = config$db_u, 
   db_pw = config$db_pw) 
+beepr::beep()
 
 get_weekly_report_pg(
   anchor_date = lubridate::today(),
-  look_back_days = 9,
+  look_back_days = 8,
   db_u = config$db_u,
   db_pw = config$db_pw,
   target_badges = getActiveBadges(config$badge_file),
@@ -46,9 +47,9 @@ beepr::beep(sound = 1)
 ######### Pulling data for feedback reports and analysis
 #########
 
-site <- c('bmc') # 'jhh','bmc'
-strt <-  lubridate::ymd('2023-01-01')#config$FB_report_start,#lubridate::ymd('2022-02-27'), 
-stp <- lubridate::ymd('2023-04-01')#config$FB_report_stop,#lubridate::ymd('2022-03-01'), 
+site <- c('jhh') # 'jhh','bmc'
+strt <-  lubridate::ymd('2023-04-02')#config$FB_report_start,#lubridate::ymd('2022-02-27'), 
+stp <- lubridate::ymd('2023-07-01')#config$FB_report_stop,#lubridate::ymd('2022-03-01'), 
 data_for_fb_df  <- get_and_locCode_RTLS_data_pg(
   badges = getActiveBadges(config$badge_file), #unique(bayview_active_badges$RTLS_ID), 
   strt = strt, #lubridate::ymd('2022-01-01'),#config$FB_report_start,#lubridate::ymd('2022-02-27'), 
@@ -103,6 +104,9 @@ create_FB_reports(
   save_badge_timeline = TRUE,
   min_hours_for_fb = 40*4*3 #config$min_hours_for_fb
 )
+
+x <- data_for_fb_df %>%
+  group_by(badge) %>% summarize(s = sum(duration))
 
 ######### Save data for analysis
 #########

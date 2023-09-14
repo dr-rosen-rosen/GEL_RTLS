@@ -137,13 +137,14 @@ jhh <- get_receiver_loc_data(
     db_pw = config$db_pw),
   t_name = 'rtls_receivers') #%>%
 #select(Receiver) %>% unique(.)
+write.csv(jhh,'jhh_receiver_recode5.csv')
 
-write_csv(bmc, file = 'bmc_receiver_recode.csv')
-write_csv(jhh, file = 'jhh_receiver_recode.csv')
+# write_csv(bmc, file = 'bmc_receiver_recode.csv')
+# write_csv(jhh, file = 'jhh_receiver_recode.csv')
 #df <- read.csv('receiver_recode_reviewed.csv')
 
 manual_receiver_update(
-  df = read.csv('jhh_receiver_recode3.csv'), 
+  df = read.csv('jhh_receiver_recode5.csv'), 
   con = get_connection(
     db_name = paste0('rtls_','jhh'),
     db_u = config$db_u,

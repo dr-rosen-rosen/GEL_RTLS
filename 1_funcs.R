@@ -255,7 +255,7 @@ manual_receiver_update <- function(df, con) {
 }
 
 ###############################################################################################
-#####################   Creates a bar charts
+#####################   Creates plots for reports
 ###############################################################################################
 
 make_overall_bar <- function(df, badge_num){
@@ -292,10 +292,6 @@ make_overall_bar <- function(df, badge_num){
 
   return(summary_fig)
 }
-
-###############################################################################################
-#####################   Creates area plots
-###############################################################################################
 
 make_area_plot <- function(df, perc, badge) {
 
@@ -501,3 +497,208 @@ get_files_from_outlk <- function(outlk_sess, n) {
   }
   NULL
 }
+
+###############################################################################################
+#####################   Functions for replicating JAMA Open paper
+###############################################################################################
+
+clean_timelines <- function(df) {
+  # Clean timelines
+  df <- df %>%
+    mutate(
+      receiver_recode = as.character(receiver_recode)
+    ) %>%
+    filter(date(time_in) < date(time_out)) %>%
+    apply(1,split_days) %>%
+    dplyr::bind_rows() %>%
+    mutate(
+      time_in = as.POSIXct(time_in,origin = "1970-01-01", tz = "America/New_York"),
+      time_out = as.POSIXct(time_out,origin = "1970-01-01", tz = "America/New_York")
+    ) %>%
+    mutate(
+      time_in = if_else(is.na(time_in),
+                        as.POSIXct(paste(as.character(lubridate::date(time_out)),"00:00:00"), format = "%Y-%m-%d %H:%M:%S"),
+                        time_in),
+      time_out = if_else(is.na(time_out),
+                         as.POSIXct(paste(as.character(lubridate::date(time_in)),"23:59:59"), format = "%Y-%m-%d %H:%M:%S"),
+                         time_out),
+    ) %>%
+    mutate(
+      duration = as.numeric(difftime(time_out,time_in, units = "mins"))
+    ) %>%
+    full_join(df[which(date(df$time_in) == date(df$time_out)),]) %>%
+    filter(if_any(everything(), ~ !is.na(.)))
+  return(df)
+}
+
+get_loc_summaries <- function(df) {
+  df <- df %>% mutate(date = as.Date(time_in)) %>%
+    dplyr::select(badge,receiver_recode, date, duration) %>%
+    group_by(badge, date, receiver_recode) %>%
+    summarise(duration = sum(duration)) %>%
+    ungroup() %>%
+    filter(!is.na(receiver_recode)) %>% # fix this!!
+    pivot_wider(
+      id_cols = c(badge,date),
+      names_from = receiver_recode,
+      values_from = duration
+    ) %>%
+    mutate(
+      total = rowSums(.[-c(1:2)],na.rm=TRUE)
+    ) %>%
+    janitor::clean_names() %>%
+    rowwise() %>%
+    mutate(
+      transit_perc = transit / total,
+      ward_hall_perc = ward_hall / total,
+      education_perc = education / total,
+      family_waiting_space_perc = family_waiting_space / total,
+      md_workroom_perc = md_workroom / total,
+      patient_room_perc = patient_room / total,
+      supply_and_admin_perc = supply_and_admin / total,
+      other_unknown_perc = other_unknown / total
+    ) %>% ungroup()
+  return(df)
+}
+
+get_tot_sum <- function(df) {
+
+  daily_sum <- get_loc_summaries(df) %>%
+    mutate(interval = 'all_24') %>%
+    filter(total >= 4*60)
+
+  morning_df <- df %>%
+    mutate(
+      time_out = case_when(
+        (hour(time_in) <= 12) & (hour(time_out) >= 12) ~ as.POSIXct(paste(as.character(lubridate::date(time_out)),"12:00:00"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_out
+      ),
+      time_in = case_when(
+        (hour(time_in) <= 6) & (hour(time_out) >= 6) ~ as.POSIXct(paste(as.character(lubridate::date(time_in)),"06:00:00"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_in
+      )
+    ) %>%
+    filter((hour(time_in) >= 6) & (hour(time_out) <= 12)) %>%
+    get_loc_summaries(.) %>%
+    mutate(interval = 'morning')  %>%
+    filter(total >= 4*60)
+  
+  afternoon_df <- df %>%
+    # filter((hour(time_in) <= 12) & (hour(time_out) >= 12))
+    mutate(
+      time_out = case_when(
+        (hour(time_in) <= 18) & (hour(time_out) >= 18) ~ as.POSIXct(paste(as.character(lubridate::date(time_out)),"18:00:00"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_out
+      ),
+      time_in = case_when(
+        (hour(time_in) <= 12) & (hour(time_out) >= 12) ~ as.POSIXct(paste(as.character(lubridate::date(time_in)),"12:00:00"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_in
+      )
+    ) %>%
+    filter((hour(time_in) >= 12) & (hour(time_out) <= 18)) %>%
+    get_loc_summaries(.) %>%
+    mutate(interval = 'afternoon')  %>%
+    filter(total >= 4*60)
+  
+  evening_df <- df %>%
+    # filter((hour(time_in) <= 12) & (hour(time_out) >= 12))
+    mutate(
+      time_out = case_when(
+        (hour(time_in) >= 18) & (hour(time_out) < hour(time_in)) ~ as.POSIXct(paste(as.character(lubridate::date(time_out)),"23:59:59"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_out
+      ),
+      time_in = case_when(
+        (hour(time_in) <= 18) & (hour(time_out) >= 18) ~ as.POSIXct(paste(as.character(lubridate::date(time_in)),"18:00:00"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_in
+      )
+    ) %>%
+    filter((hour(time_in) >= 18) & (hour(time_out) <= 23)) %>%
+    get_loc_summaries(.) %>%
+    mutate(interval = 'evening')  %>%
+    filter(total >= 4*60)
+  
+  night_df <- df %>%
+    # filter((hour(time_in) <= 12) & (hour(time_out) >= 12))
+    mutate(
+      time_out = case_when(
+        (hour(time_in) <= 6) & (hour(time_out) >= 6) ~ as.POSIXct(paste(as.character(lubridate::date(time_out)),"06:00:00"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_out
+      )
+    ) %>%
+    filter((hour(time_in) >= 0) & (hour(time_out) <= 6)) %>%
+    get_loc_summaries(.) %>%
+    mutate(interval = 'night')  %>%
+    filter(total >= 4*60)
+  
+  rounds_df <- df %>%
+    mutate(
+      time_out = case_when(
+        ((hour(time_in) <= 11) & (hour(time_out) >= 11)) ~ as.POSIXct(paste(as.character(lubridate::date(time_out)),"11:00:00"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_out
+      ),
+      time_in = case_when(
+        ( ((hour(time_in)*60 + minute(time_in)) <= (8*60+30))  & ( ( hour(time_out)*60 + minute(time_out) ) <= (8*60+30) )) ~ as.POSIXct(paste(as.character(lubridate::date(time_in)),"8:30:00"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_in
+      ),
+      interval = 'rounds'
+    ) %>%
+    filter( (hour(time_in)*60 + minute(time_in)) <= (8*60+30) & (hour(time_out) <= 11)) %>%
+    get_loc_summaries(.) %>%
+    mutate(interval = 'rounds')  %>%
+    filter(total >= 2.5*60)
+  
+  tot_sum <- bind_rows(
+    daily_sum, morning_df, afternoon_df, evening_df, night_df, rounds_df)
+  
+  return(tot_sum)
+}
+
+###############################################################################################
+#####################   Functions for workflow metrics
+###############################################################################################
+
+
+getEntropy <- function(g) {
+  # creates a uniform time series by second
+  # calculates shonnon entropy based on vector of receivers (not location categories)
+  data <- g %>% 
+    dplyr::select(-c(time_out,duration,receiver_name,receiver_recode,site)) %>%
+    mutate(
+      time_in = floor_date(time_in, unit = "second"))
+  e <- data_frame(
+    'time_in' = seq(min(g$time_in), by = 'sec', length.out = difftime(max(g$time_out), min(g$time_in), units = 'secs'))) %>%
+    left_join(data, by = 'time_in', multiple = 'all') %>%
+    fill(receiver, .direction = 'down') %>%
+    dplyr::select(receiver) %>%
+    drop_na() %>%
+    table() %>%
+    DescTools::Entropy()
+  print(e)
+  return(e)
+}
+
+getEntropy_sfly <- purrr::safely(getEntropy, otherwise = NA)
+
+getBurstiness <- function(g) {
+  # creates a uniform time series by second
+  # identifies each second as being a 'transition' (change in location) or not, (1 or 0 respectively)
+  # generates fano factor (sd of ts / mean of ts)
+  data <- g %>% 
+    dplyr::select(-c(time_out,duration,receiver_name,receiver_recode,site)) %>%
+    mutate(
+      time_in = floor_date(time_in, unit = "second"))
+  b <- data_frame(
+    'time_in' = seq(min(g$time_in), by = 'sec', length.out = difftime(max(g$time_out), min(g$time_in), units = 'secs'))) %>%
+    left_join(data, by = 'time_in', multiple = 'all') %>%
+    fill(receiver, .direction = 'down') %>%
+    mutate(
+      transition = if_else(receiver == lag(receiver), 0, 1)  # 1 if receiver is different than preceding receiver, 0 otherwise
+    ) %>%
+    dplyr::select(transition) %>%
+    drop_na()
+  ff <- sd(b$transition) /  mean(b$transition) # fano factor
+  print(ff)
+  return(ff)
+}
+
+getBurstiness_sfly <- purrr::safely(.f = getBurstiness, otherwise = NA)
