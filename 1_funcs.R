@@ -696,9 +696,156 @@ getBurstiness <- function(g) {
     ) %>%
     dplyr::select(transition) %>%
     drop_na()
-  ff <- sd(b$transition) /  mean(b$transition) # fano factor
+  ff <- var(b$transition) /  mean(b$transition) # fano factor
   print(ff)
   return(ff)
 }
 
 getBurstiness_sfly <- purrr::safely(.f = getBurstiness, otherwise = NA)
+
+get_workflow_metrics <- function(df){
+  wrkflw_df <- df %>%
+    mutate(d = date(time_in)) %>%
+    group_by(badge, d) %>%
+    summarize(
+      duration = difftime(max(time_out), min(time_in), units = 'secs'),
+      min_in = min(time_in),
+      max_out = max(time_out),
+      entropy = getEntropy_sfly(pick(everything()))$result, 
+      burstiness = getBurstiness_sfly(pick(everything()))$result,
+      .groups = 'keep'
+    )
+  return(wrkflw_df)
+}
+
+
+###############################################################################################
+#####################   Functions adapted from JAMA Open analysis
+###############################################################################################
+
+do_cleaning <- function(df) {
+  df$month <- month(df$date)
+  #formatting vars
+  fac_vars <- c('rot_cat','interval','badge','month','site')
+  for (var in fac_vars) {
+    df[[var]] <- as.factor(df[[var]])
+  }
+  df$interval <- ordered(df$interval, levels = c('all_24', 'rounds', 'morning', 'afternoon', 'evening', 'night'))
+  df$month <- ordered(df$month, levels = c(7,8,9,10,11,12,1,2,3,4,5,6))
+  to_min_vars <- c('md_workroom', 'supply_and_admin','patient_room', 'education', 'other_unknown',
+                   'family_waiting_space','transit', 'ward_hall', 'total')
+  print(nrow(df))
+  # df <- df %>% mutate(across(to_min_vars, ~.x/60))
+  to_replace_na_vars <- append(
+    to_min_vars,
+    c('md_workroom_perc', 'supply_and_admin_perc','patient_room_perc', 'education_perc',
+      'other_unknown_perc', 'family_waiting_space_perc','transit_perc', 'ward_hall_perc')
+  )
+  # exclusions
+  big_intervals <- c('all_24', 'morning', 'afternoon', 'evening', 'night')
+  print(nrow(df))
+  df <- df %>%
+    filter(
+      (interval %in% big_intervals & total >= 240) | (interval == 'rounds' & total >= 60)
+    ) %>%
+    mutate(
+      across(all_of(to_replace_na_vars), ~tidyr::replace_na(.x, 0))
+    )
+
+  df <- df %>%
+    rowwise() %>%
+    mutate(
+      day_of_week = wday(date,week_start = 1) - 1, # Monday = 0
+      week_day = if_else(day_of_week < 5, TRUE, FALSE),
+      day_of_year = case_when(
+        ((date >= lubridate::ymd('2020-07-01')) & (date <= lubridate::ymd('2021-06-30'))) ~ difftime(date,lubridate::ymd('2020-07-01'), units = c('days')),
+        ((date >= lubridate::ymd('2021-07-01')) & (date <= lubridate::ymd('2022-06-30'))) ~ difftime(date,lubridate::ymd('2021-07-01'), units = c('days')),
+        ((date >= lubridate::ymd('2022-07-01')) & (date <= lubridate::ymd('2023-06-30'))) ~ difftime(date,lubridate::ymd('2022-07-01'), units = c('days')),
+        .default = NA
+      )
+    ) %>% ungroup()
+
+  df <- df %>%
+    drop_na(local_id,rotation) %>%
+  filter(rot_cat != 'off' | rot_cat != 'other' | rot_cat != 'ambulatory') %>%
+  mutate(rot_cat = case_match(rot_cat,
+                              c('Subspecialty','subspecialty') ~ 'subspecialty',
+                              .default = rot_cat))
+  return(df)
+}
+
+locations <- c('md_workroom', 'supply_and_admin','patient_room', 'education', 'other_unknown', 
+               'family_waiting_space','transit', 'ward_hall')
+locations_perc <- paste0(locations, '_perc')
+cmb_df4[,append(c('interval','total'),locations_perc)] %>% 
+  drop_na() %>%
+  gtsummary::tbl_summary(by = interval)
+  
+make_tables <- function(df) {
+  # this isn't working; abandoned for gtsummary
+  locations <- c('md_workroom', 'supply_and_admin','patient_room', 'education', 'other_unknown', 
+                 'family_waiting_space','transit', 'ward_hall', 'total')
+  df_sub <- df[,append(c('interval','day_of_week'),locations)]
+  print(nrow(df_sub))
+  # Weekdays & Weekends together
+  stargazer::stargazer(df_sub[df_sub$interval == 'all_24',], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Overall_OverallTable.doc"))
+  stargazer::stargazer(df_sub[df_sub$interval == 'morning',], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Overall_morning_Table.doc"))
+  stargazer::stargazer(df_sub[df_sub$interval == 'afternoon',], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Overall_afternoon_Table.doc"))
+  stargazer::stargazer(df_sub[df_sub$interval == 'evening',], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Overall_evening_Table.doc"))
+  stargazer::stargazer(df_sub[df_sub$interval == 'night',], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Overall_night_Table.doc"))
+  stargazer::stargazer(df_sub[df_sub$interval == 'rounds',], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Overall_rounds_Table.doc"))
+  
+  # Weekdays only
+  stargazer::stargazer(df_sub[(df_sub$interval == 'all_24') & (df_sub$day_of_week < 5),], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Weekdays_OverallTable.doc"))
+  stargazer::stargazer(df_sub[(df_sub$interval == 'morning') & (df_sub$day_of_week < 5),], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Weekdays_morning_Table.doc"))
+  stargazer::stargazer(df_sub[(df_sub$interval == 'afternoon') & (df_sub$day_of_week < 5),], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Weekdays_afternoon_Table.doc"))
+  stargazer::stargazer(df_sub[(df_sub$interval == 'evening') & (df_sub$day_of_week < 5),], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Weekdays_evening_Table.doc"))
+  stargazer::stargazer(df_sub[(df_sub$interval == 'night') & (df_sub$day_of_week < 5),], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Weekdays_night_Table.doc"))
+  stargazer::stargazer(df_sub[(df_sub$interval == 'rounds') & (df_sub$day_of_week < 5),], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Weekdays_rounds_Table.doc"))
+  
+  # Weekends only
+  
+  stargazer::stargazer(df_sub[(df_sub$interval == 'all_24') & (df_sub$day_of_week >= 5),], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Weekend_OverallTable.doc"))
+  stargazer::stargazer(df_sub[(df_sub$interval == 'morning') & (df_sub$day_of_week >= 5),], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Weekend_morning_Table.doc"))
+  stargazer::stargazer(df_sub[(df_sub$interval == 'afternoon') & (df_sub$day_of_week >= 5),], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Weekend_afternoon_Table.doc"))
+  stargazer::stargazer(df_sub[(df_sub$interval == 'evening') & (df_sub$day_of_week >= 5),], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Weekend_evening_Table.doc"))
+  stargazer::stargazer(df_sub[(df_sub$interval == 'night') & (df_sub$day_of_week >= 5),], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Weekend_night_Table.doc"))
+  stargazer::stargazer(df_sub[(df_sub$interval == 'rounds') & (df_sub$day_of_week >= 5),], type = 'html',
+            digits = 1,
+            out = here::here('2023_output','tables',"Weekend_rounds_Table.doc"))
+  NULL
+}
