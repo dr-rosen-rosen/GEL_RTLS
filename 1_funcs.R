@@ -80,6 +80,14 @@ migrate_location_codes <- function(pg_con, sqlite_con){
   NULL
 }
 
+push_rtls_to_db <- function(tmp_csv_path, archive_csv_path, db_u, db_pw, con) {
+  # this is a rewrite of the python csv_to_db_pg; as it stopped working with sa update
+  sites <- c('jhh','bmc')
+  for (site in sites) {
+    
+  }
+}
+
 ###############################################################################################
 #####################   Pulls data for specific badges and time range
 ###############################################################################################

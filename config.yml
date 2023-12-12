@@ -1,5 +1,6 @@
 default:
     py_version: "python3/bin/python"
+    #py_version: '.venv/bin/python3'
     rcvr_recode_file: '/Users/mrosen44/OneDrive - Johns Hopkins University/Data_Analysis/IM_Resident_Study/Receiver_codes/Revised_reciever_category_2.xlsx'
     rcvr_recode_file_loc: '/Data/'
     db_loc: '/Users/mrosen44/Documents/Data_Analysis_Local/RTLS_FB_Reports/'
