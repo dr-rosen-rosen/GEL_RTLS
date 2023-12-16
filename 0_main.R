@@ -7,7 +7,7 @@
 
 library(here)
 library(config)
-library(reticulate)
+# library(reticulate)
 library(lubridate)
 library(tidyverse)
 library(patchwork)
@@ -15,9 +15,9 @@ debuggingState(on=FALSE)
 # start ve with: source python3/bin/activate in project folder
 Sys.setenv(R_CONFIG_ACTIVE = 'default')#"pilot_study_RTLS_030819_db") #
 config <- config::get()
-Sys.setenv(RETICULATE_PYTHON = config$py_version)
+# Sys.setenv(RETICULATE_PYTHON = config$py_version)
 # reticulate::source_python('1_funcs.py')
-reticulate::source_python('1_funcs_pg.py')
+# reticulate::source_python('1_funcs_pg.py')
 source(here('1_funcs.R'), echo = TRUE)
 
 ######### Automated data flow from email to postgres
@@ -28,14 +28,22 @@ get_files_from_outlk(
   n = 10 # Number of emails to pull at once. Chokes with >10; for a full week it's 16 files w/ data and battery reports
 )
 
-csv_to_db_pg(
+# OLD python function now broken; thanks sqlalchemy
+# csv_to_db_pg(
+#   tmp_csv_path = config$tmp_csv_path, 
+#   archive_csv_path = config$archive_csv_path,
+#   db_u = config$db_u, 
+#   db_pw = config$db_pw) 
+
+# NEW replacement function
+push_rtls_to_db(
   tmp_csv_path = config$tmp_csv_path, 
   archive_csv_path = config$archive_csv_path,
   db_u = config$db_u, 
-  db_pw = config$db_pw) 
+  db_pw = config$db_pw)
 beepr::beep()
 
-get_weekly_report_pg(
+get_weekly_report2(
   anchor_date = lubridate::today(),
   look_back_days = 8,
   db_u = config$db_u,
@@ -43,6 +51,16 @@ get_weekly_report_pg(
   target_badges = getActiveBadges(config$badge_file),
   weekly_report_dir = config$weekly_report_dir)
 beepr::beep(sound = 1)
+
+
+# get_weekly_report_pg(
+#   anchor_date = lubridate::today(),
+#   look_back_days = 8,
+#   db_u = config$db_u,
+#   db_pw = config$db_pw,
+#   target_badges = getActiveBadges(config$badge_file),
+#   weekly_report_dir = config$weekly_report_dir)
+# beepr::beep(sound = 1)
 
 ######### Pulling data for feedback reports and analysis
 #########

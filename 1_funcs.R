@@ -80,17 +80,82 @@ migrate_location_codes <- function(pg_con, sqlite_con){
   NULL
 }
 
-push_rtls_to_db <- function(tmp_csv_path, archive_csv_path, db_u, db_pw, con) {
+updateRTLSReceivers2 <- function(con,df) {
+  all_rcvrs <- con |>
+    tbl('rtls_receivers') |>
+    collect()
+  print(nrow(all_rcvrs))
+  df <- df |>
+    dplyr::select(Receiver,ReceiverName) |>
+    rename(receiver = Receiver, receiver_name = ReceiverName) |>
+    filter(!(receiver %in% unique(all_rcvrs$receiver)))
+  print(nrow(df))
+  DBI::dbAppendTable(con,'rtls_receivers',value = df)
+}
+
+push_rtls_to_db <- function(tmp_csv_path, archive_csv_path, db_u, db_pw) {
   # this is a rewrite of the python csv_to_db_pg; as it stopped working with sa update
   sites <- c('jhh','bmc')
   for (site in sites) {
+    print(paste0('rtls_',site))
+    con <- get_connection(
+      db_name = paste0('rtls_',site),
+      db_u = config$db_u,
+      db_pw = config$db_pw)
+    if (!DBI::dbExistsTable(con,'rtls_receivers')) {
+      DBI::dbWriteTable(con,'rtls_receivers',
+                        data.frame(receiver = integer(),
+                                   receiver_name = character(),
+                                   location_code = character()))
+    }
+    # Reads in all the csvs for a given site
+    fnames <- list.files(tmp_csv_path,pattern = paste0('rtls_',site), full.names = TRUE)
+    site_dfs <- fnames %>%
+      purrr::map_dfr(read.csv,skip = 2,fileEncoding = "UTF-16")
+    names(site_dfs) <- c('Badge','Initials','FirstName','LastName','Receiver',
+                         'ReceiverName','BadgeTimeIn','BadgeTimeOut')
+    updateRTLSReceivers2(con,site_dfs)
     
+    site_dfs <- site_dfs |>
+      drop_na() |>
+      mutate(
+        across(contains('Time'), ~ lubridate::as_datetime(.x))) |>
+      rename(RTLS_ID = Badge, receiver = Receiver, time_in = BadgeTimeIn, time_out = BadgeTimeOut) |>
+      dplyr::select(RTLS_ID,receiver,time_in,time_out) |>
+      distinct()
+    
+    for (badge in unique(site_dfs$RTLS_ID)) {
+      t_name <- paste0('table_',badge)
+      print(t_name)
+      if (!DBI::dbExistsTable(con,t_name)) {
+        DBI::dbWriteTable(con,t_name,
+                          data.frame(receiver = integer(),
+                                     time_in = lubridate::POSIXct(),
+                                     time_out = lubridate::POSIXct()))
+      }
+      data <- site_dfs |>
+        filter(RTLS_ID == badge) |>
+        dplyr::select(-RTLS_ID)
+      print(nrow(data))
+      DBI::dbAppendTable(con,t_name,data)
+    }
+  } # end of 'sites' for loop
+  for (f in list.files(tmp_csv_path)) {
+    fs::file_move(fs::path(tmp_csv_path,f),fs::path(archive_csv_path,f))
   }
 }
+
 
 ###############################################################################################
 #####################   Pulls data for specific badges and time range
 ###############################################################################################
+
+get_active_badges2 <- function(badge_file) {
+  badges <- readxl::read_xlsx(badge_file) |>
+    filter(Active == 'Yes') |>
+    mutate(RTLS_ID = as.integer(RTLS_ID))
+  return(unique(badges$RTLS_ID))
+}
 
 get_RTLS_data <- function(badges, strt, stp, con) {
   # set up empty dataframe to store
@@ -261,6 +326,43 @@ manual_receiver_update <- function(df, con) {
   }
   NULL
 }
+
+get_weekly_report2 <- function(
+    anchor_date,look_back_days,db_u,db_pw,target_badges,weekly_report_dir) {
+  # set date variables
+  rght_win <- anchor_date
+  lft_win <- rght_win - as.difftime(look_back_days, unit="days")
+  
+  # Get all data for active badges
+  dfs <- list()
+  for (site in c('jhh','bmc')) {
+    df <- get_RTLS_data(
+      badges = target_badges,
+      strt = lft_win,
+      stp = rght_win,
+      con = get_connection(
+        db_name = paste0('rtls_',site),
+        db_u = config$db_u,
+        db_pw = config$db_pw)
+    )
+    dfs[[site]] <- df
+  }
+  all_data <- purrr::reduce(dfs,rbind) |>
+    mutate(duration = as.numeric(time_out - time_in)/60) |>
+    group_by(badge) |>
+    summarise(tot_duration_minutes = sum(duration)) |>
+    ungroup() |>
+    arrange(tot_duration_minutes)
+  
+  fname <- glue::glue('IM_Badge_data_from_{lft_win}_to_{rght_win}_runOn{Sys.Date()}.csv')
+  print(fname)
+  write.csv(all_data,here::here(weekly_report_dir,fname))
+  print(glue::glue("Of the {length(target_badges)} active badges, {nrow(all_data)} had data between {lft_win} and {rght_win}"))
+  print(glue::glue('These active badges did not have data: {setdiff(target_badges,unique(all_data$badge))}'))
+  
+  return(all_data)
+}
+
 
 ###############################################################################################
 #####################   Creates plots for reports
@@ -545,7 +647,7 @@ get_loc_summaries <- function(df) {
     group_by(badge, date, receiver_recode) %>%
     summarise(duration = sum(duration)) %>%
     ungroup() %>%
-    filter(!is.na(receiver_recode)) %>% # fix this!!
+    filter(!is.na(receiver_recode)) %>% 
     pivot_wider(
       id_cols = c(badge,date),
       names_from = receiver_recode,
@@ -711,7 +813,147 @@ getBurstiness <- function(g) {
 
 getBurstiness_sfly <- purrr::safely(.f = getBurstiness, otherwise = NA)
 
+get_workflow_metrics_by_interval <- function(df){
+  
+  daily_sum <- df %>%
+    mutate(d = date(time_in)) |>
+    group_by(badge, d) |>
+    summarize(
+      duration = difftime(max(time_out), min(time_in), units = 'secs'),
+      min_in = min(time_in),
+      max_out = max(time_out),
+      entropy = getEntropy_sfly(pick(everything()))$result, 
+      burstiness = getBurstiness_sfly(pick(everything()))$result,
+      .groups = 'keep'
+    ) %>% ungroup() |>
+    mutate(interval = 'all_24')
+  
+  morning_df <- df %>%
+    mutate(
+      time_out = case_when(
+        (hour(time_in) <= 12) & (hour(time_out) >= 12) ~ as.POSIXct(paste(as.character(lubridate::date(time_out)),"12:00:00"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_out
+      ),
+      time_in = case_when(
+        (hour(time_in) <= 6) & (hour(time_out) >= 6) ~ as.POSIXct(paste(as.character(lubridate::date(time_in)),"06:00:00"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_in
+      )
+    ) %>%
+    filter((hour(time_in) >= 6) & (hour(time_out) <= 12)) %>%
+    mutate(d = date(time_in)) |>
+    group_by(badge, d) |>
+    summarize(
+      duration = difftime(max(time_out), min(time_in), units = 'secs'),
+      min_in = min(time_in),
+      max_out = max(time_out),
+      entropy = getEntropy_sfly(pick(everything()))$result, 
+      burstiness = getBurstiness_sfly(pick(everything()))$result,
+      .groups = 'keep'
+    ) %>% ungroup() |>
+    mutate(interval = 'morning')
+  
+  afternoon_df <- df %>%
+    # filter((hour(time_in) <= 12) & (hour(time_out) >= 12))
+    mutate(
+      time_out = case_when(
+        (hour(time_in) <= 18) & (hour(time_out) >= 18) ~ as.POSIXct(paste(as.character(lubridate::date(time_out)),"18:00:00"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_out
+      ),
+      time_in = case_when(
+        (hour(time_in) <= 12) & (hour(time_out) >= 12) ~ as.POSIXct(paste(as.character(lubridate::date(time_in)),"12:00:00"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_in
+      )
+    ) %>%
+    filter((hour(time_in) >= 12) & (hour(time_out) <= 18)) %>%
+    mutate(d = date(time_in)) |>
+    group_by(badge, d) |>
+    summarize(
+      duration = difftime(max(time_out), min(time_in), units = 'secs'),
+      min_in = min(time_in),
+      max_out = max(time_out),
+      entropy = getEntropy_sfly(pick(everything()))$result, 
+      burstiness = getBurstiness_sfly(pick(everything()))$result,
+      .groups = 'keep'
+    ) %>% ungroup() |>
+    mutate(interval = 'afternoon')
+  
+  evening_df <- df %>%
+    mutate(
+      time_out = case_when(
+        (hour(time_in) >= 18) & (hour(time_out) < hour(time_in)) ~ as.POSIXct(paste(as.character(lubridate::date(time_out)),"23:59:59"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_out
+      ),
+      time_in = case_when(
+        (hour(time_in) <= 18) & (hour(time_out) >= 18) ~ as.POSIXct(paste(as.character(lubridate::date(time_in)),"18:00:00"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_in
+      )
+    ) %>%
+    filter((hour(time_in) >= 18) & (hour(time_out) <= 23)) %>%
+    mutate(d = date(time_in)) |>
+    group_by(badge, d) |>
+    summarize(
+      duration = difftime(max(time_out), min(time_in), units = 'secs'),
+      min_in = min(time_in),
+      max_out = max(time_out),
+      entropy = getEntropy_sfly(pick(everything()))$result, 
+      burstiness = getBurstiness_sfly(pick(everything()))$result,
+      .groups = 'keep'
+    ) %>% ungroup() |>
+    mutate(interval = 'evening')
+  
+  night_df <- df %>%
+    mutate(
+      time_out = case_when(
+        (hour(time_in) <= 6) & (hour(time_out) >= 6) ~ as.POSIXct(paste(as.character(lubridate::date(time_out)),"06:00:00"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_out
+      )
+    ) %>%
+    filter((hour(time_in) >= 0) & (hour(time_out) <= 6)) %>%
+    mutate(d = date(time_in)) |>
+    group_by(badge, d) |>
+    summarize(
+      duration = difftime(max(time_out), min(time_in), units = 'secs'),
+      min_in = min(time_in),
+      max_out = max(time_out),
+      entropy = getEntropy_sfly(pick(everything()))$result, 
+      burstiness = getBurstiness_sfly(pick(everything()))$result,
+      .groups = 'keep'
+    ) %>% ungroup() |>
+    mutate(interval = 'night')
+  
+  rounds_df <- df %>%
+    mutate(
+      time_out = case_when(
+        ((hour(time_in) <= 11) & (hour(time_out) >= 11)) ~ as.POSIXct(paste(as.character(lubridate::date(time_out)),"11:00:00"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_out
+      ),
+      time_in = case_when(
+        ( ((hour(time_in)*60 + minute(time_in)) <= (8*60+30))  & ( ( hour(time_out)*60 + minute(time_out) ) <= (8*60+30) )) ~ as.POSIXct(paste(as.character(lubridate::date(time_in)),"8:30:00"), format = "%Y-%m-%d %H:%M:%S"),
+        .default = time_in
+      ),
+      interval = 'rounds'
+    ) %>%
+    filter( (hour(time_in)*60 + minute(time_in)) <= (8*60+30) & (hour(time_out) <= 11)) %>%
+    mutate(d = date(time_in)) |>
+    group_by(badge, d) |>
+    summarize(
+      duration = difftime(max(time_out), min(time_in), units = 'secs'),
+      min_in = min(time_in),
+      max_out = max(time_out),
+      entropy = getEntropy_sfly(pick(everything()))$result, 
+      burstiness = getBurstiness_sfly(pick(everything()))$result,
+      .groups = 'keep'
+    ) %>% ungroup() |>
+    mutate(interval = 'rounds')
+  
+  tot_sum <- bind_rows(
+    daily_sum, morning_df, afternoon_df, evening_df, night_df, rounds_df)
+  
+  return(tot_sum)
+}
+
 get_workflow_metrics <- function(df){
+  
   wrkflw_df <- df %>%
     mutate(d = date(time_in)) %>%
     group_by(badge, d) %>%
@@ -723,10 +965,12 @@ get_workflow_metrics <- function(df){
       burstiness = getBurstiness_sfly(pick(everything()))$result,
       .groups = 'keep'
     )
+  
+  
+  
+  
   return(wrkflw_df)
 }
-
-
 ###############################################################################################
 #####################   Functions adapted from JAMA Open analysis
 ###############################################################################################
@@ -782,12 +1026,12 @@ do_cleaning <- function(df) {
   return(df)
 }
 
-locations <- c('md_workroom', 'supply_and_admin','patient_room', 'education', 'other_unknown', 
-               'family_waiting_space','transit', 'ward_hall')
-locations_perc <- paste0(locations, '_perc')
-cmb_df4[,append(c('interval','total'),locations_perc)] %>% 
-  drop_na() %>%
-  gtsummary::tbl_summary(by = interval)
+# locations <- c('md_workroom', 'supply_and_admin','patient_room', 'education', 'other_unknown', 
+#                'family_waiting_space','transit', 'ward_hall')
+# locations_perc <- paste0(locations, '_perc')
+# cmb_df4[,append(c('interval','total'),locations_perc)] %>% 
+#   drop_na() %>%
+#   gtsummary::tbl_summary(by = interval)
   
 make_tables <- function(df) {
   # this isn't working; abandoned for gtsummary

@@ -7,7 +7,7 @@
 ############## Pull data for all target badges for a site
 ##############
 
-site <- c('jhh') # 'jhh','bmc'
+# site <- c('jhh') # 'jhh','bmc'
 strt <-  lubridate::ymd('2020-07-01')#config$FB_report_start,#lubridate::ymd('2022-02-27'), 
 stp <- lubridate::ymd('2023-06-30')#config$FB_report_stop,#lubridate::ymd('2022-03-01'), 
 df  <- get_and_locCode_RTLS_data_pg(
@@ -24,12 +24,16 @@ df  <- get_and_locCode_RTLS_data_pg(
 
 df <- clean_timelines(df)
 cmb_df <- get_tot_sum(df)
-wrkflw_df <- get_workflow_metrics(df)
+# wrkflw_df <- get_workflow_metrics(df)
+wrkflw_df <- get_workflow_metrics_by_interval(df)
 wrkflw_df <- wrkflw_df %>%
   rename(date = d)
 cmb_df <- cmb_df %>%
-  full_join(wrkflw_df, by = c('badge','date'))
+  left_join(wrkflw_df, by = c('badge','date','interval'))
 skimr::skim(cmb_df)
+
+skimr::skim(wrkflw_df)
+# DescTools::Entropy(table(c('1','1','1','4')))
 
 ##############
 ############## Link with participant id's and. shift data
@@ -110,9 +114,9 @@ skimr::skim(cmb_df3)
 skimr::skim(cmb_df2)
 
 cmb_df4 <- do_cleaning(cmb_df3)
+skimr::skim(cmb_df4)
 
-
-cmb_df4 %>% write.csv('rtls_data_11-21-2023.csv')
+cmb_df4 %>% write.csv('rtls_data_12-16-2023.csv')
 
 
 # table(cmb_df4[which(cmb_df4$rot_cat == 'icu'),'rotation']) %>% write.csv(.,'ICU_rotations2.csv')
