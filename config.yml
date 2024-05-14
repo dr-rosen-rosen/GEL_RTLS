@@ -13,7 +13,8 @@ default:
     rule_1_thresh: 300
     rule_2_thresh: 180
     rule_2_locs: !expr list('MD Workroom')
-    badge_file: '/Users/mrosen44/Johns Hopkins University/Amanda Bertram - Graduate Medical Training Laboratory/RTLS Badge Status.xlsx'
+    #badge_file: '/Users/mrosen44/Johns Hopkins University/Amanda Bertram - Graduate Medical Training Laboratory/RTLS Badge Status.xlsx'
+    badge_file: '/Users/mrosen44/Library/CloudStorage/OneDrive-SharedLibraries-JohnsHopkinsUniversity/Amanda Bertram - Graduate Medical Training Laboratory/RTLS Badge Status.xlsx'
     weekly_report_dir: '/Users/mrosen44/Documents/Data_Analysis_Local/GEL_RTLS/Output/WeeklyReportDocs/'
     FB_report_dir: '/Output/FeedbackReportDocs/'
     FB_report_template: 'Output/Templates/FB_report_template.docx'

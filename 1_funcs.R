@@ -88,9 +88,12 @@ updateRTLSReceivers2 <- function(con,df) {
   df <- df |>
     dplyr::select(Receiver,ReceiverName) |>
     rename(receiver = Receiver, receiver_name = ReceiverName) |>
-    filter(!(receiver %in% unique(all_rcvrs$receiver)))
+    filter(!(receiver %in% unique(all_rcvrs$receiver))) |>
+    distinct()
   print(nrow(df))
+  print(df)
   DBI::dbAppendTable(con,'rtls_receivers',value = df)
+  print('done updating receivers')
 }
 
 push_rtls_to_db <- function(tmp_csv_path, archive_csv_path, db_u, db_pw) {
@@ -110,8 +113,11 @@ push_rtls_to_db <- function(tmp_csv_path, archive_csv_path, db_u, db_pw) {
     }
     # Reads in all the csvs for a given site
     fnames <- list.files(tmp_csv_path,pattern = paste0('rtls_',site), full.names = TRUE)
+    print(fnames)
     site_dfs <- fnames %>%
-      purrr::map_dfr(read.csv,skip = 2,fileEncoding = "UTF-16")
+      # purrr::map_dfr(read.csv,skip = 2,fileEncoding = "UTF-16LE")
+      purrr::map_dfr(readr::read_csv,skip = 2,locale = readr::locale(encoding = "UTF-16LE"), guess_max = 1001)
+    print('done map_dfr')
     names(site_dfs) <- c('Badge','Initials','FirstName','LastName','Receiver',
                          'ReceiverName','BadgeTimeIn','BadgeTimeOut')
     updateRTLSReceivers2(con,site_dfs)
@@ -143,6 +149,7 @@ push_rtls_to_db <- function(tmp_csv_path, archive_csv_path, db_u, db_pw) {
   for (f in list.files(tmp_csv_path)) {
     fs::file_move(fs::path(tmp_csv_path,f),fs::path(archive_csv_path,f))
   }
+  # return(site_dfs)
 }
 
 
@@ -278,7 +285,7 @@ get_and_locCode_RTLS_data_pg <- function(badges, strt, stp, sites, use_rules) {
           collect() %>%
           mutate(across(c('time_in','time_out'), lubridate::ymd_hms)) %>%
           filter(time_in > strt & time_in < stp) # start and stop times are non-inclusive
-        if (!plyr::empty(df)) {
+        if ((!plyr::empty(badge_data))) {
           badge_data$badge <- as.integer(stringr::str_split(badge, '_')[[1]][2])
           site_data <- rbind(site_data, badge_data)
         } else {print(paste('No data in range for',badge,'...'))}
@@ -356,9 +363,10 @@ get_weekly_report2 <- function(
   
   fname <- glue::glue('IM_Badge_data_from_{lft_win}_to_{rght_win}_runOn{Sys.Date()}.csv')
   print(fname)
+  badges_no_data <- paste(setdiff(target_badges,unique(all_data$badge)), collapse = ', ')
   write.csv(all_data,here::here(weekly_report_dir,fname))
   print(glue::glue("Of the {length(target_badges)} active badges, {nrow(all_data)} had data between {lft_win} and {rght_win}"))
-  print(glue::glue('These active badges did not have data: {setdiff(target_badges,unique(all_data$badge))}'))
+  print(glue::glue('These active badges did not have data: {badges_no_data}'))
   
   return(all_data)
 }
@@ -458,6 +466,14 @@ make_area_plot <- function(df, perc, badge) {
 ###############################################################################################
 
 ### Creates one feedback report
+make_timeseries_df_for_dummies2 <- function(df) {
+  df <- df |>
+    rename('hour'='time_in','location'='receiver_recode') |>
+    group_by(hour,location) |>
+    summarize(duration = sum(duration)) |>
+    ungroup()
+  return(df)
+}
 
 create_FB_reports <- function(df, FB_report_dir, save_badge_timeline, min_hours_for_fb) {
   # Notes: this currently does not account for small amounts of time a resident may spend at more than
@@ -479,12 +495,12 @@ create_FB_reports <- function(df, FB_report_dir, save_badge_timeline, min_hours_
     for (badge in unique(df_site$badge)){
       overall_bar <- make_overall_bar(df = df_site, badge_num = badge)
       ind_area_norm <- make_area_plot(
-        df = make_timeseries_df_for_dummies(df = df_site[which(df_site$badge == badge), ]),#,f = 'S'),
+        df = make_timeseries_df_for_dummies2(df = df_site[which(df_site$badge == badge), ]),#,f = 'S'),
         perc = TRUE, #if true, will create porportional chart ,if false will do raw
         badge = badge # if NULL this assumes a summary plot; if an int it will use that in plot titles
       )
       ind_area_raw <- make_area_plot(
-        df = make_timeseries_df_for_dummies(df = df_site[which(df_site$badge == badge), ]),#,f = 'S'),
+        df = make_timeseries_df_for_dummies2(df = df_site[which(df_site$badge == badge), ]),#,f = 'S'),
         perc = FALSE, #if true, will create porportional chart ,if false will do raw
         badge = badge # if NULL this assumes a summary plot; if an int it will use that in plot titles
       )
@@ -618,6 +634,8 @@ clean_timelines <- function(df) {
     mutate(
       receiver_recode = as.character(receiver_recode)
     ) %>%
+    # This pulls out rows where the in and out times straddle dates and splits into two
+    # since all anlayses are done by the 24 hour day.
     filter(date(time_in) < date(time_out)) %>%
     apply(1,split_days) %>%
     dplyr::bind_rows() %>%
@@ -633,10 +651,11 @@ clean_timelines <- function(df) {
                          as.POSIXct(paste(as.character(lubridate::date(time_in)),"23:59:59"), format = "%Y-%m-%d %H:%M:%S"),
                          time_out),
     ) %>%
+    # joins the split data rows back in with the rows where time in's and out's are on one date
+    full_join(df[which(date(df$time_in) == date(df$time_out)),]) %>%
     mutate(
       duration = as.numeric(difftime(time_out,time_in, units = "mins"))
     ) %>%
-    full_join(df[which(date(df$time_in) == date(df$time_out)),]) %>%
     filter(if_any(everything(), ~ !is.na(.)))
   return(df)
 }
@@ -674,8 +693,8 @@ get_loc_summaries <- function(df) {
 get_tot_sum <- function(df) {
 
   daily_sum <- get_loc_summaries(df) %>%
-    mutate(interval = 'all_24') %>%
-    filter(total >= 4*60)
+    mutate(interval = 'all_24') #%>%
+    #filter(total >= 4*60)
 
   morning_df <- df %>%
     mutate(
@@ -688,10 +707,10 @@ get_tot_sum <- function(df) {
         .default = time_in
       )
     ) %>%
-    filter((hour(time_in) >= 6) & (hour(time_out) <= 12)) %>%
+    filter((hour(time_in) >= 6) & (hour(time_in) < 12) & (hour(time_out) <= 12)) %>%
     get_loc_summaries(.) %>%
-    mutate(interval = 'morning')  %>%
-    filter(total >= 4*60)
+    mutate(interval = 'morning')  #%>%
+    #filter(total >= 4*60)
   
   afternoon_df <- df %>%
     # filter((hour(time_in) <= 12) & (hour(time_out) >= 12))
@@ -705,16 +724,16 @@ get_tot_sum <- function(df) {
         .default = time_in
       )
     ) %>%
-    filter((hour(time_in) >= 12) & (hour(time_out) <= 18)) %>%
+    filter((hour(time_in) >= 12) & (hour(time_in) < 18) & (hour(time_out) <= 18)) %>%
     get_loc_summaries(.) %>%
-    mutate(interval = 'afternoon')  %>%
-    filter(total >= 4*60)
+    mutate(interval = 'afternoon')  #%>%
+    #filter(total >= 4*60)
   
   evening_df <- df %>%
     # filter((hour(time_in) <= 12) & (hour(time_out) >= 12))
     mutate(
       time_out = case_when(
-        (hour(time_in) >= 18) & (hour(time_out) < hour(time_in)) ~ as.POSIXct(paste(as.character(lubridate::date(time_out)),"23:59:59"), format = "%Y-%m-%d %H:%M:%S"),
+        (hour(time_in) >= 18) & (date(time_out) != date(time_in)) ~ as.POSIXct(paste(as.character(lubridate::date(time_in)),"23:59:59"), format = "%Y-%m-%d %H:%M:%S"),
         .default = time_out
       ),
       time_in = case_when(
@@ -724,8 +743,8 @@ get_tot_sum <- function(df) {
     ) %>%
     filter((hour(time_in) >= 18) & (hour(time_out) <= 23)) %>%
     get_loc_summaries(.) %>%
-    mutate(interval = 'evening')  %>%
-    filter(total >= 4*60)
+    mutate(interval = 'evening')  #%>%
+    #filter(total >= 4*60)
   
   night_df <- df %>%
     # filter((hour(time_in) <= 12) & (hour(time_out) >= 12))
@@ -735,10 +754,10 @@ get_tot_sum <- function(df) {
         .default = time_out
       )
     ) %>%
-    filter((hour(time_in) >= 0) & (hour(time_out) <= 6)) %>%
+    filter((hour(time_in) >= 0) & (hour(time_in) < 6) & (hour(time_out) <= 6)) %>%
     get_loc_summaries(.) %>%
-    mutate(interval = 'night')  %>%
-    filter(total >= 4*60)
+    mutate(interval = 'night')  #%>%
+    #filter(total >= 4*60)
   
   rounds_df <- df %>%
     mutate(
@@ -747,15 +766,15 @@ get_tot_sum <- function(df) {
         .default = time_out
       ),
       time_in = case_when(
-        ( ((hour(time_in)*60 + minute(time_in)) <= (8*60+30))  & ( ( hour(time_out)*60 + minute(time_out) ) <= (8*60+30) )) ~ as.POSIXct(paste(as.character(lubridate::date(time_in)),"8:30:00"), format = "%Y-%m-%d %H:%M:%S"),
+        ( ((hour(time_in)*60 + minute(time_in)) <= (8*60+30))  & ( ( hour(time_out)*60 + minute(time_out) ) >= (8*60+30) )) ~ as.POSIXct(paste(as.character(lubridate::date(time_in)),"8:30:00"), format = "%Y-%m-%d %H:%M:%S"),
         .default = time_in
       ),
       interval = 'rounds'
     ) %>%
-    filter( (hour(time_in)*60 + minute(time_in)) <= (8*60+30) & (hour(time_out) <= 11)) %>%
+    filter( (hour(time_in)*60 + minute(time_in)) >= (8*60+30) & (hour(time_in) < 11) & (hour(time_out) <= 11)) %>%
     get_loc_summaries(.) %>%
-    mutate(interval = 'rounds')  %>%
-    filter(total >= 2.5*60)
+    mutate(interval = 'rounds') # %>%
+    #filter(total >= 2.5*60)
   
   tot_sum <- bind_rows(
     daily_sum, morning_df, afternoon_df, evening_df, night_df, rounds_df)
@@ -767,7 +786,6 @@ get_tot_sum <- function(df) {
 #####################   Functions for workflow metrics
 ###############################################################################################
 
-
 getEntropy <- function(g) {
   # creates a uniform time series by second
   # calculates shonnon entropy based on vector of receivers (not location categories)
@@ -776,58 +794,125 @@ getEntropy <- function(g) {
     mutate(
       time_in = floor_date(time_in, unit = "second"))
   e <- data_frame(
-    'time_in' = seq(min(g$time_in), by = 'sec', length.out = difftime(max(g$time_out), min(g$time_in), units = 'secs'))) %>%
+    'time_in' = seq(min(data$time_in, na.rm = TRUE), by = 'sec', length.out = difftime(max(floor_date(g$time_out, unit = 'second'), na.rm = TRUE), min(data$time_in, na.rm = TRUE), units = 'secs'))) %>%
     left_join(data, by = 'time_in', multiple = 'all') %>%
     fill(receiver, .direction = 'down') %>%
     dplyr::select(receiver) %>%
     drop_na() %>%
     table() %>%
     DescTools::Entropy()
-  print(e)
+  # print(glue::glue('Entropy: {e}'))
   return(e)
 }
 
 getEntropy_sfly <- purrr::safely(getEntropy, otherwise = NA)
 
 getBurstiness <- function(g) {
+  # OLD APPROACH THAT DOES NOT WORK
   # creates a uniform time series by second
   # identifies each second as being a 'transition' (change in location) or not, (1 or 0 respectively)
   # generates fano factor (sd of ts / mean of ts)
-  data <- g %>% 
-    dplyr::select(-c(time_out,duration,receiver_name,receiver_recode,site)) %>%
+  print(nrow(g))
+  data <- g |>
+    arrange(time_in) |>
+    dplyr::select(-c(time_out,duration,receiver_name,receiver_recode,site)) |>
     mutate(
-      time_in = floor_date(time_in, unit = "second"))
+      time_in = floor_date(time_in, unit = "second")) #|>
+      # time_in = floor_date(time_in, unit = 'minute')) |>
+    # group_by(time_in) |> # this marks and 'internal transition' if there was more than one detection within a given minute
+    # mutate(
+    #   int_transition = if_else(n() > 1, 1, 0)
+    # ) |>
+    # filter(row_number() == n()) |>
+    # ungroup()
+
+  print(nrow(data))
+  print(table(data$int_transition))
+
   b <- data_frame(
-    'time_in' = seq(min(g$time_in), by = 'sec', length.out = difftime(max(g$time_out), min(g$time_in), units = 'secs'))) %>%
+    'time_in' = seq(first(data$time_in), by = 'sec', length.out = difftime(last(data$time_in), first(data$time_in), units = 'sec'))) %>%
     left_join(data, by = 'time_in', multiple = 'all') %>%
     fill(receiver, .direction = 'down') %>%
     mutate(
-      transition = if_else(receiver == lag(receiver), 0, 1)  # 1 if receiver is different than preceding receiver, 0 otherwise
+      transition = if_else(receiver == lag(receiver), 0, 1)
+      # transition = if_else((receiver == lag(receiver) & int_transition == 0), 0, 1),  # 1 if receiver is different than preceding receiver, 0 otherwise
+      # transition = if_else(int_transition == 1, 1, transition) # sets transition to 1 if there was an internal transition for a given minute
     ) %>%
     dplyr::select(transition) %>%
     drop_na()
-  ff <- var(b$transition) /  mean(b$transition) # fano factor
-  print(ff)
-  return(ff)
-}
 
+  print(nrow(b))
+  print(table(b$transition))
+  # ff <- var(b$transition, na.rm = TRUE) /  mean(b$transition, na.rm = TRUE) # fano factor
+  # print(glue::glue('fano factor: {ff}'))
+  # return(ff)
+  # print('at r')
+  r <- sd(b$transition, na.rm = TRUE) / mean(b$transition, na.rm = TRUE)
+  print(r)
+  # print('at b_param')
+  b_param <- (r - 1) / (r + 1)
+  print(glue::glue('bursty param: {b_param}'))
+  return(b_param)
+}
 getBurstiness_sfly <- purrr::safely(.f = getBurstiness, otherwise = NA)
 
+getBurstiness1 <- function(g) {
+  # Method for original burstiness parameter
+  # create a series of inter-event duration
+  # assumes each 'time in' is in a different location; can run a check of that
+  data <- g |> 
+    arrange(time_in) |>
+    mutate(
+      lag_time_in = lag(time_in),
+      inter_event_dur = as.numeric(difftime(time_in, lag_time_in, units = 'secs'))
+      ) |>
+    dplyr::select(inter_event_dur) |>
+    drop_na()
+  r <- sd(data$inter_event_dur, na.rm = TRUE) / mean(data$inter_event_dur, na.rm = TRUE)
+  b_param <- (r - 1) / (r + 1)
+  # print(glue::glue('Burstiness param: {b_param}'))
+  return(b_param)
+}
+getBurstiness_sfly1 <- purrr::safely(.f = getBurstiness1, otherwise = NA)
+
+getBurstiness2 <- function(g) {
+  # method for 
+  # create a series of inter-event duration
+  # assumes each 'time in' is in a different location; can run a check of that
+  data <- g |> 
+    arrange(time_in) |>
+    mutate(
+      lag_time_in = lag(time_in),
+      inter_event_dur = as.numeric(difftime(time_in, lag_time_in, units = 'secs'))
+    ) |>
+    dplyr::select(inter_event_dur) |>
+    drop_na()
+  r <- sd(data$inter_event_dur, na.rm = TRUE) / mean(data$inter_event_dur, na.rm = TRUE)
+  n <- nrow(data)
+  b_param <- (sqrt(n + r) - sqrt(n - 1)) / (((sqrt(n + 1) - 2) * r) + sqrt(n - 1))
+  # print(glue::glue('Burstiness param redux: {b_param}'))
+  return(b_param)
+}
+getBurstiness_sfly2 <- purrr::safely(.f = getBurstiness2, otherwise = NA)
+
 get_workflow_metrics_by_interval <- function(df){
-  
+  print('starting daily...')
   daily_sum <- df %>%
     mutate(d = date(time_in)) |>
     group_by(badge, d) |>
     summarize(
-      duration = difftime(max(time_out), min(time_in), units = 'secs'),
-      min_in = min(time_in),
-      max_out = max(time_out),
-      entropy = getEntropy_sfly(pick(everything()))$result, 
-      burstiness = getBurstiness_sfly(pick(everything()))$result,
+      min_in = min(time_in, na.rm = TRUE),
+      max_out = max(time_out, na.rm = TRUE),
+      duration = as.numeric(difftime(max_out, min_in, units = 'secs'))/60,
+      sum_duration = sum(duration),
+      n_row_wrkflw = n(),
+      entropy = getEntropy_sfly(pick(everything()))$result,
+      b_param = getBurstiness_sfly1(pick(everything()))$result,
+      b_param_2 = getBurstiness_sfly2(pick(everything()))$result,
       .groups = 'keep'
     ) %>% ungroup() |>
     mutate(interval = 'all_24')
-  
+  print('starting morning...')
   morning_df <- df %>%
     mutate(
       time_out = case_when(
@@ -839,21 +924,21 @@ get_workflow_metrics_by_interval <- function(df){
         .default = time_in
       )
     ) %>%
-    filter((hour(time_in) >= 6) & (hour(time_out) <= 12)) %>%
+    filter((hour(time_in) >= 6) & (hour(time_in) < 12) & (hour(time_out) <= 12)) %>%
     mutate(d = date(time_in)) |>
     group_by(badge, d) |>
     summarize(
-      duration = difftime(max(time_out), min(time_in), units = 'secs'),
-      min_in = min(time_in),
-      max_out = max(time_out),
-      entropy = getEntropy_sfly(pick(everything()))$result, 
-      burstiness = getBurstiness_sfly(pick(everything()))$result,
+      min_in = min(time_in, na.rm = TRUE),
+      max_out = max(time_out, na.rm = TRUE),
+      duration = as.numeric(difftime(max_out, min_in, units = 'secs'))/60,
+      entropy = getEntropy_sfly(pick(everything()))$result,
+      b_param = getBurstiness_sfly1(pick(everything()))$result,
+      b_param_2 = getBurstiness_sfly2(pick(everything()))$result,
       .groups = 'keep'
     ) %>% ungroup() |>
     mutate(interval = 'morning')
-  
+  print('starting afternoon...')
   afternoon_df <- df %>%
-    # filter((hour(time_in) <= 12) & (hour(time_out) >= 12))
     mutate(
       time_out = case_when(
         (hour(time_in) <= 18) & (hour(time_out) >= 18) ~ as.POSIXct(paste(as.character(lubridate::date(time_out)),"18:00:00"), format = "%Y-%m-%d %H:%M:%S"),
@@ -864,23 +949,24 @@ get_workflow_metrics_by_interval <- function(df){
         .default = time_in
       )
     ) %>%
-    filter((hour(time_in) >= 12) & (hour(time_out) <= 18)) %>%
+    filter((hour(time_in) >= 12) & (hour(time_in) < 18) & (hour(time_out) <= 18)) %>%
     mutate(d = date(time_in)) |>
     group_by(badge, d) |>
     summarize(
-      duration = difftime(max(time_out), min(time_in), units = 'secs'),
-      min_in = min(time_in),
-      max_out = max(time_out),
-      entropy = getEntropy_sfly(pick(everything()))$result, 
-      burstiness = getBurstiness_sfly(pick(everything()))$result,
+      min_in = min(time_in, na.rm = TRUE),
+      max_out = max(time_out, na.rm = TRUE),
+      duration = as.numeric(difftime(max_out, min_in, units = 'secs'))/60,
+      entropy = getEntropy_sfly(pick(everything()))$result,
+      b_param = getBurstiness_sfly1(pick(everything()))$result,
+      b_param_2 = getBurstiness_sfly2(pick(everything()))$result,
       .groups = 'keep'
     ) %>% ungroup() |>
     mutate(interval = 'afternoon')
-  
+  print('starting evening...')
   evening_df <- df %>%
     mutate(
       time_out = case_when(
-        (hour(time_in) >= 18) & (hour(time_out) < hour(time_in)) ~ as.POSIXct(paste(as.character(lubridate::date(time_out)),"23:59:59"), format = "%Y-%m-%d %H:%M:%S"),
+        (hour(time_in) >= 18) & (date(time_out) != date(time_in)) ~ as.POSIXct(paste(as.character(lubridate::date(time_in)),"23:59:59"), format = "%Y-%m-%d %H:%M:%S"),
         .default = time_out
       ),
       time_in = case_when(
@@ -892,15 +978,18 @@ get_workflow_metrics_by_interval <- function(df){
     mutate(d = date(time_in)) |>
     group_by(badge, d) |>
     summarize(
-      duration = difftime(max(time_out), min(time_in), units = 'secs'),
-      min_in = min(time_in),
-      max_out = max(time_out),
-      entropy = getEntropy_sfly(pick(everything()))$result, 
-      burstiness = getBurstiness_sfly(pick(everything()))$result,
+      min_in = min(time_in, na.rm = TRUE),
+      max_out = max(time_out, na.rm = TRUE),
+      duration = as.numeric(difftime(max_out, min_in, units = 'secs'))/60,
+      sum_duration = sum(duration),
+      n_row_wrkflw = n(),
+      entropy = getEntropy_sfly(pick(everything()))$result,
+      b_param = getBurstiness_sfly1(pick(everything()))$result,
+      b_param_2 = getBurstiness_sfly2(pick(everything()))$result,
       .groups = 'keep'
     ) %>% ungroup() |>
     mutate(interval = 'evening')
-  
+  print('starting night...')
   night_df <- df %>%
     mutate(
       time_out = case_when(
@@ -908,19 +997,22 @@ get_workflow_metrics_by_interval <- function(df){
         .default = time_out
       )
     ) %>%
-    filter((hour(time_in) >= 0) & (hour(time_out) <= 6)) %>%
+    filter((hour(time_in) >= 0) & (hour(time_in) < 6) & (hour(time_out) <= 6)) %>%
     mutate(d = date(time_in)) |>
     group_by(badge, d) |>
     summarize(
-      duration = difftime(max(time_out), min(time_in), units = 'secs'),
-      min_in = min(time_in),
-      max_out = max(time_out),
-      entropy = getEntropy_sfly(pick(everything()))$result, 
-      burstiness = getBurstiness_sfly(pick(everything()))$result,
+      min_in = min(time_in, na.rm = TRUE),
+      max_out = max(time_out, na.rm = TRUE),
+      duration = as.numeric(difftime(max_out, min_in, units = 'secs'))/60,
+      sum_duration = sum(duration),
+      n_row_wrkflw = n(),
+      entropy = getEntropy_sfly(pick(everything()))$result,
+      b_param = getBurstiness_sfly1(pick(everything()))$result,
+      b_param_2 = getBurstiness_sfly2(pick(everything()))$result,
       .groups = 'keep'
     ) %>% ungroup() |>
     mutate(interval = 'night')
-  
+  print('starting rounds...')
   rounds_df <- df %>%
     mutate(
       time_out = case_when(
@@ -928,27 +1020,31 @@ get_workflow_metrics_by_interval <- function(df){
         .default = time_out
       ),
       time_in = case_when(
-        ( ((hour(time_in)*60 + minute(time_in)) <= (8*60+30))  & ( ( hour(time_out)*60 + minute(time_out) ) <= (8*60+30) )) ~ as.POSIXct(paste(as.character(lubridate::date(time_in)),"8:30:00"), format = "%Y-%m-%d %H:%M:%S"),
+        ( ((hour(time_in)*60 + minute(time_in)) <= (8*60+30))  & ( ( hour(time_out)*60 + minute(time_out) ) >= (8*60+30) )) ~ as.POSIXct(paste(as.character(lubridate::date(time_in)),"8:30:00"), format = "%Y-%m-%d %H:%M:%S"),
         .default = time_in
       ),
       interval = 'rounds'
     ) %>%
-    filter( (hour(time_in)*60 + minute(time_in)) <= (8*60+30) & (hour(time_out) <= 11)) %>%
+    filter( (hour(time_in)*60 + minute(time_in)) >= (8*60+30) & (hour(time_in) < 11) & (hour(time_out) <= 11)) %>%
     mutate(d = date(time_in)) |>
     group_by(badge, d) |>
     summarize(
-      duration = difftime(max(time_out), min(time_in), units = 'secs'),
-      min_in = min(time_in),
-      max_out = max(time_out),
-      entropy = getEntropy_sfly(pick(everything()))$result, 
-      burstiness = getBurstiness_sfly(pick(everything()))$result,
+      min_in = min(time_in, na.rm = TRUE),
+      max_out = max(time_out, na.rm = TRUE),
+      duration = as.numeric(difftime(max_out, min_in, units = 'secs'))/60,
+      sum_duration = sum(duration),
+      n_row_wrkflw = n(),
+      entropy = getEntropy_sfly(pick(everything()))$result,
+      b_param = getBurstiness_sfly1(pick(everything()))$result,
+      b_param_2 = getBurstiness_sfly2(pick(everything()))$result,
       .groups = 'keep'
     ) %>% ungroup() |>
     mutate(interval = 'rounds')
-  
+
   tot_sum <- bind_rows(
-    daily_sum, morning_df, afternoon_df, evening_df, night_df, rounds_df)
-  
+    daily_sum, morning_df, afternoon_df, evening_df, night_df, rounds_df) |>
+    rename(date = d)
+
   return(tot_sum)
 }
 
@@ -958,11 +1054,12 @@ get_workflow_metrics <- function(df){
     mutate(d = date(time_in)) %>%
     group_by(badge, d) %>%
     summarize(
-      duration = difftime(max(time_out), min(time_in), units = 'secs'),
+      duration = as.numeric(difftime(max(time_out), min(time_in), units = 'secs')),
       min_in = min(time_in),
       max_out = max(time_out),
-      entropy = getEntropy_sfly(pick(everything()))$result, 
-      burstiness = getBurstiness_sfly(pick(everything()))$result,
+      # entropy = getEntropy_sfly(pick(everything()))$result, 
+      # burstiness = getBurstiness_sfly(pick(everything()))$result,
+      burstiness = getBurstiness(pick(everything()))$result,
       .groups = 'keep'
     )
   
@@ -971,6 +1068,7 @@ get_workflow_metrics <- function(df){
   
   return(wrkflw_df)
 }
+
 ###############################################################################################
 #####################   Functions adapted from JAMA Open analysis
 ###############################################################################################
@@ -1025,13 +1123,6 @@ do_cleaning <- function(df) {
                               .default = rot_cat))
   return(df)
 }
-
-# locations <- c('md_workroom', 'supply_and_admin','patient_room', 'education', 'other_unknown', 
-#                'family_waiting_space','transit', 'ward_hall')
-# locations_perc <- paste0(locations, '_perc')
-# cmb_df4[,append(c('interval','total'),locations_perc)] %>% 
-#   drop_na() %>%
-#   gtsummary::tbl_summary(by = interval)
   
 make_tables <- function(df) {
   # this isn't working; abandoned for gtsummary

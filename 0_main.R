@@ -4,9 +4,9 @@
 #####################
 ###############################################################################################
 ###############################################################################################
-
+# rm(list = ls())
 library(here)
-library(config)
+# library(config)
 # library(reticulate)
 library(lubridate)
 library(tidyverse)
@@ -25,7 +25,7 @@ source(here('1_funcs.R'), echo = TRUE)
 
 get_files_from_outlk(
   outlk_sess = Microsoft365R::get_business_outlook(),
-  n = 10 # Number of emails to pull at once. Chokes with >10; for a full week it's 16 files w/ data and battery reports
+  n = 10# Number of emails to pull at once. Chokes with >10; for a full week it's 16 files w/ data and battery reports
 )
 
 # OLD python function now broken; thanks sqlalchemy
@@ -43,6 +43,75 @@ push_rtls_to_db(
   db_pw = config$db_pw)
 beepr::beep()
 
+
+########## step by stepping this funciton that broke with upgrade
+
+# push_rtls_to_db <- function(tmp_csv_path, archive_csv_path, db_u, db_pw) {
+
+# this is a rewrite of the python csv_to_db_pg; as it stopped working with sa update
+# tmp_csv_path <- config$tmp_csv_path
+# archive_csv_path <- config$archive_csv_path
+# db_u <- config$db_u
+# db_pw <- config$db_pw
+# 
+# # sites <- c('jhh','bmc')
+# site <- c('bmc')
+# # for (site in sites) {
+# print(paste0('rtls_',site))
+# con <- get_connection(
+#   db_name = paste0('rtls_',site),
+#   db_u = config$db_u,
+#   db_pw = config$db_pw)
+# if (!DBI::dbExistsTable(con,'rtls_receivers')) {
+#   DBI::dbWriteTable(con,'rtls_receivers',
+#                     data.frame(receiver = integer(),
+#                                receiver_name = character(),
+#                                location_code = character()))
+# }
+# # Reads in all the csvs for a given site
+# fnames <- list.files(tmp_csv_path,pattern = paste0('rtls_',site), full.names = TRUE)
+# print(fnames)
+# site_dfs <- fnames %>%
+#   # purrr::map_dfr(read.csv,skip = 2,fileEncoding = "UTF-16LE")
+#   purrr::map_dfr(readr::read_csv,skip = 2,locale = readr::locale(encoding = "UTF-16LE"), guess_max = 1001)
+# print('done map_dfr')
+# names(site_dfs) <- c('Badge','Initials','FirstName','LastName','Receiver',
+#                      'ReceiverName','BadgeTimeIn','BadgeTimeOut')
+# updateRTLSReceivers2(con,site_dfs)
+# 
+# site_dfs <- site_dfs |>
+#   drop_na() |>
+#   mutate(
+#     across(contains('Time'), ~ lubridate::as_datetime(.x))) |>
+#   rename(RTLS_ID = Badge, receiver = Receiver, time_in = BadgeTimeIn, time_out = BadgeTimeOut) |>
+#   dplyr::select(RTLS_ID,receiver,time_in,time_out) |>
+#   distinct()
+# 
+# for (badge in unique(site_dfs$RTLS_ID)) {
+#   t_name <- paste0('table_',badge)
+#   print(t_name)
+#   if (!DBI::dbExistsTable(con,t_name)) {
+#     DBI::dbWriteTable(con,t_name,
+#                       data.frame(receiver = integer(),
+#                                  time_in = lubridate::POSIXct(),
+#                                  time_out = lubridate::POSIXct()))
+#   }
+#   data <- site_dfs |>
+#     filter(RTLS_ID == badge) |>
+#     dplyr::select(-RTLS_ID)
+#   print(nrow(data))
+#   DBI::dbAppendTable(con,t_name,data)
+# }
+# # } # end of 'sites' for loop
+# for (f in list.files(tmp_csv_path)) {
+#   fs::file_move(fs::path(tmp_csv_path,f),fs::path(archive_csv_path,f))
+# }
+# # return(site_dfs)
+
+
+
+
+
 get_weekly_report2(
   anchor_date = lubridate::today(),
   look_back_days = 8,
@@ -52,6 +121,10 @@ get_weekly_report2(
   weekly_report_dir = config$weekly_report_dir)
 beepr::beep(sound = 1)
 
+fnames <- list.files(config$tmp_csv_path,pattern = paste0('rtls_',site), full.names = TRUE)
+test <- readr::read_csv(fnames, skip = 2, encoding, locale = readr::locale(encoding = "UTF-16LE"))
+
+test <- purrr::map_dfr(fnames, readr::read_csv,col_types = 'icciicTT',skip = 2,locale = readr::locale(encoding = "UTF-16LE"), guess_max = 1001)
 
 # get_weekly_report_pg(
 #   anchor_date = lubridate::today(),
@@ -66,13 +139,13 @@ beepr::beep(sound = 1)
 #########
 
 site <- c('jhh') # 'jhh','bmc'
-strt <-  lubridate::ymd('2023-04-02')#config$FB_report_start,#lubridate::ymd('2022-02-27'), 
-stp <- lubridate::ymd('2023-07-01')#config$FB_report_stop,#lubridate::ymd('2022-03-01'), 
+strt <-  lubridate::ymd('2024-01-01')#config$FB_report_start,#lubridate::ymd('2022-02-27'), 
+stp <- lubridate::ymd('2024-04-01')#config$FB_report_stop,#lubridate::ymd('2022-03-01'), 
 data_for_fb_df  <- get_and_locCode_RTLS_data_pg(
   badges = getActiveBadges(config$badge_file), #unique(bayview_active_badges$RTLS_ID), 
   strt = strt, #lubridate::ymd('2022-01-01'),#config$FB_report_start,#lubridate::ymd('2022-02-27'), 
   stp = stp, #lubridate::ymd('2022-7-01'),#config$FB_report_stop,#lubridate::ymd('2022-03-01'), 
-  sites = site, #c('bmc'), # 'jhh','bmc'
+  sites = c('jhh','bmc'), #site, #c('bmc'), # 'jhh','bmc'
   use_rules = TRUE # this is currently commented out in the function
 )
 
@@ -84,7 +157,7 @@ data_for_fb_df %>%
   group_by(badge,date) %>%
   summarise(dupe = n()>1) %>%
   filter(dupe == TRUE)
-write_csv(df,'duplicated_badges.csv')
+#write_csv(df,'duplicated_badges.csv')
 
 # Clean timelines
 data_for_fb_df <- data_for_fb_df %>%
@@ -120,7 +193,7 @@ create_FB_reports(
   df = data_for_fb_df,
   FB_report_dir = config$FB_report_dir,
   save_badge_timeline = TRUE,
-  min_hours_for_fb = 40*4*3 #config$min_hours_for_fb
+  min_hours_for_fb = 20*4*3 #config$min_hours_for_fb
 )
 
 x <- data_for_fb_df %>%
