@@ -139,8 +139,8 @@ test <- purrr::map_dfr(fnames, readr::read_csv,col_types = 'icciicTT',skip = 2,l
 #########
 
 site <- c('jhh') # 'jhh','bmc'
-strt <-  lubridate::ymd('2024-01-01')#config$FB_report_start,#lubridate::ymd('2022-02-27'), 
-stp <- lubridate::ymd('2024-04-01')#config$FB_report_stop,#lubridate::ymd('2022-03-01'), 
+strt <-  lubridate::ymd('2024-04-01')#config$FB_report_start,#lubridate::ymd('2022-02-27'), 
+stp <- lubridate::ymd('2024-07-01')#config$FB_report_stop,#lubridate::ymd('2022-03-01'), 
 data_for_fb_df  <- get_and_locCode_RTLS_data_pg(
   badges = getActiveBadges(config$badge_file), #unique(bayview_active_badges$RTLS_ID), 
   strt = strt, #lubridate::ymd('2022-01-01'),#config$FB_report_start,#lubridate::ymd('2022-02-27'), 
