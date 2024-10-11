@@ -139,13 +139,13 @@ test <- purrr::map_dfr(fnames, readr::read_csv,col_types = 'icciicTT',skip = 2,l
 #########
 
 site <- c('jhh') # 'jhh','bmc'
-strt <-  lubridate::ymd('2024-04-01')#config$FB_report_start,#lubridate::ymd('2022-02-27'), 
+strt <-  lubridate::ymd('2018-06-30')#config$FB_report_start,#lubridate::ymd('2022-02-27'), 
 stp <- lubridate::ymd('2024-07-01')#config$FB_report_stop,#lubridate::ymd('2022-03-01'), 
 data_for_fb_df  <- get_and_locCode_RTLS_data_pg(
   badges = getActiveBadges(config$badge_file), #unique(bayview_active_badges$RTLS_ID), 
   strt = strt, #lubridate::ymd('2022-01-01'),#config$FB_report_start,#lubridate::ymd('2022-02-27'), 
   stp = stp, #lubridate::ymd('2022-7-01'),#config$FB_report_stop,#lubridate::ymd('2022-03-01'), 
-  sites = c('jhh','bmc'), #site, #c('bmc'), # 'jhh','bmc'
+  sites = c('jhh'), #site, #c('bmc'), # 'jhh','bmc'
   use_rules = TRUE # this is currently commented out in the function
 )
 
@@ -229,19 +229,45 @@ data_for_fb_df %>%
     avg_perc = mean(perc, na.rm = TRUE)) %>%
   ungroup() %>%
   filter(receiver_recode == 'Patient room') %>%
-  group_by( yw = paste( year(date), week(date))) %>%
+  # group_by( yw = paste( year(date), week(date))) %>%
+  group_by( ym = paste( year(date), month(date))) %>%
   mutate(date = min(date), avg_perc = mean(avg_perc)) %>%
   ggplot(aes(x=date,y=avg_perc)) + geom_line() +
-  geom_vline(xintercept = lubridate::ymd("2020-11-19"), color = 'green') +
-  geom_vline(xintercept = lubridate::ymd("2021-02-23"), color = 'red') +
-  geom_vline(xintercept = lubridate::ymd("2021-05-11"), color = 'yellow') +
-  geom_vline(xintercept = lubridate::ymd("2021-07-07"), color = 'green') +
-  geom_vline(xintercept = lubridate::ymd("2021-08-04"), color = 'yellow') +
-  geom_vline(xintercept = lubridate::ymd("2021-12-29"), color = 'red') +
-  geom_vline(xintercept = lubridate::ymd("2022-01-05"), color = 'purple') +
+  geom_vline(xintercept = lubridate::ymd("2020-03-20"), color = 'red') +
+  # geom_vline(xintercept = lubridate::ymd("2020-11-19"), color = 'green') +
+  # geom_vline(xintercept = lubridate::ymd("2021-02-23"), color = 'red') +
+  # geom_vline(xintercept = lubridate::ymd("2021-05-11"), color = 'yellow') +
+  # geom_vline(xintercept = lubridate::ymd("2021-07-07"), color = 'green') +
+  # geom_vline(xintercept = lubridate::ymd("2021-08-04"), color = 'yellow') +
+  # geom_vline(xintercept = lubridate::ymd("2021-12-29"), color = 'red') +
+  # geom_vline(xintercept = lubridate::ymd("2022-01-05"), color = 'purple') +
+  labs(title = 'Average monthly percent time at bedside', y = 'Avg. % time at bedside',  x = 'Date') +
+  scale_y_continuous(labels = scales::percent) +
   ggthemes::theme_tufte()
   
   
+
+
+###################### ITS from: https://rpubs.com/chrissyhroberts/1006858
+
+y <- lm_df |>
+  #select(-contains("prime_52"), -contains("prime_12")) |>
+  group_by(
+    #facility, 
+    week = lubridate::floor_date(surgery_date, "week")) |>
+  summarise(across(starts_with('zeta'), ~ mean(.x))) |>
+  ungroup() |>
+  #select(week,zeta_prime_4.all_cases.all_team) |>
+  mutate(
+    time = row_number(),
+    intervention = if_else(week >= as.Date("2020-03-15"), 1, 0),
+    post.int.time = c(rep(0,142),1:191)
+  )
+
+its.1 <- lm(zeta_prime_52.all_cases.core_team ~ time + intervention + post.int.time, data = y)
+summary(its.1)
+
+
 # write_csv(data_roll_up, 'dailySumDataJulyToDecember2021.csv')
 
 
